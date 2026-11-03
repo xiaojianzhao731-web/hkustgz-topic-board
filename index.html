@@ -560,7 +560,7 @@ function saveEntries(touch) {
     if (touch !== false) markSaved();
   } catch (e) { toast("保存失败：浏览器存储空间不足"); return; }
   /* 只有真正的用户编辑才算「本机待推送」；初始化写入示例数据不算 */
-  if (touch !== false && isPublisher()) { cloud.localAt = Date.now(); saveMeta(); }
+  if (touch !== false && (isPublisher() || (window.PUB_FORCE_STATIC && !window.PUB_DATA))) { cloud.localAt = Date.now(); saveMeta(); }
   updatePubStatus();
   schedulePush();
 }
@@ -665,6 +665,16 @@ function nowHM() {
 /* ================= 云端同步层 ================= */
 function loadCfg() {
   try { var raw = localStorage.getItem(LS_CFG); cloud.cfg = raw ? JSON.parse(raw) : null; } catch (e) { cloud.cfg = null; }
+  /* 本机编辑版内置了写入凭证：以文件内置配置为准。
+     浏览器里可能残留以前试用过的旧连接配置（例如已废弃的 Supabase），它会让同步彻底失效，
+     所以只要残留配置不是「可用的 GitHub + Token」，一律用内置凭证覆盖。 */
+  var builtin = (window.GH_DEFAULT && window.GH_DEFAULT.repo && window.GH_DEFAULT.token)
+    ? { type: "github", owner: window.GH_DEFAULT.owner, repo: window.GH_DEFAULT.repo, branch: window.GH_DEFAULT.branch || "main", token: window.GH_DEFAULT.token }
+    : null;
+  if (builtin && (!cloud.cfg || cloud.cfg.type !== "github" || !cloud.cfg.token)) {
+    cloud.cfg = builtin;
+    saveCfg();
+  }
   /* 部署到 GitHub Pages 的那份：内置只读连接（不含 Token），同事打开即可看到在线最新版 */
   if (!cloud.cfg && window.GH_DEFAULT && window.GH_DEFAULT.repo) {
     cloud.cfg = { type: "github", owner: window.GH_DEFAULT.owner, repo: window.GH_DEFAULT.repo, branch: window.GH_DEFAULT.branch || "main", token: window.GH_DEFAULT.token || "" };
@@ -1096,9 +1106,12 @@ function pushCloud() {
   if (!cloudEnabled() || !auth.editable) return Promise.resolve();
   cloud.busy = true;
   setSyncUI("busy", "正在同步…");
-  /* 推送前先看一眼：别人是不是已经改过（避免覆盖） */
+  /* 推送前先看一眼：别人是不是已经改过（避免覆盖）。
+     注意要跟「本机最后一次改动时间」比较——只用 lastSyncAt 会把本机刚改的内容误判成落后，直接丢掉。 */
   return cloudRead().then(function (rec) {
-    if (rec && rec.updatedAt && rec.updatedAt > cloud.lastSyncAt && rec.data && Array.isArray(rec.data.entries)) {
+    var remoteNewer = !!(rec && rec.updatedAt && rec.data && Array.isArray(rec.data.entries)
+      && rec.updatedAt > Math.max(cloud.lastSyncAt || 0, cloud.localAt || 0));
+    if (remoteNewer) {
       cloud.busy = false;
       state.entries = rec.data.entries;
       saveLocalOnly();
@@ -1132,6 +1145,27 @@ function pushCloud() {
     setSyncUI("err", "云端未连接 · 本地已保存");
     toast("同步到云端失败：" + err.message);
   });
+}
+
+/* 手动上传：编辑版顶部的「上传本机到线上」按钮用，给一个能立刻验证的出口 */
+function manualPush() {
+  if (!cloudEnabled() || !cloud.cfg || !cloud.cfg.token) {
+    toast("没检测到写入权限：请确认打开的是「本机编辑版」");
+    return;
+  }
+  auth.editable = true;
+  setSyncUI("busy", "正在上传…");
+  pushCloud().then(function (ok) {
+    if (ok === true) toast("已上传到线上，同事刷新即可看到");
+  });
+}
+/* 启动时：本机有未上传的改动就自动补传一次（解决「改了但线上没变」） */
+function bootAutoPush(rec) {
+  if (!(window.PUB_FORCE_STATIC && !window.PUB_DATA)) return;
+  if (!cloudEnabled() || !cloud.cfg || !cloud.cfg.token) return;
+  var lt = cloud.localAt || 0;
+  var rt = (rec && rec.updatedAt) || 0;
+  if (lt > rt) manualPush();
 }
 
 /* ================= 权限层 ================= */
@@ -2341,7 +2375,7 @@ function init() {
     setSyncUI("busy", "正在连接云端…");
     /* 首次打开直读 GitHub API：绕过 raw 的 5 分钟 CDN 缓存，保证「打开就是最新」 */
     cloud.preferApi = true;
-    pullCloud(true).then(function () { cloud.preferApi = false; });
+    pullCloud(true).then(function (rec) { cloud.preferApi = false; bootAutoPush(rec); });
     startPolling();
     /* 点一下顶部同步状态 = 立刻拉一次最新（同事也可用） */
     var sd = document.getElementById("syncDot");
@@ -2353,6 +2387,9 @@ function init() {
         pullCloud(false).then(function () { cloud.preferApi = false; });
       });
     }
+    /* 本机编辑版顶部的手动上传按钮 */
+    var op = document.getElementById("ownPush");
+    if (op) op.addEventListener("click", manualPush);
   } else {
     setSyncUI("off", "本地存储 · 单机模式");
     fetchPublished();
