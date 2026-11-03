@@ -547,11 +547,14 @@ var auth = { editable: false, pass: "" };
 var pub = { loaded: false, publishedAt: 0, editorHash: "", editor: "", sig: "" };
 
 function loadEntries() {
+  cloud.freshLocal = false;
   try {
     var raw = localStorage.getItem(LS_KEY);
     if (raw) { state.entries = JSON.parse(raw); return; }
   } catch (e) { /* 损坏则重置 */ }
   state.entries = JSON.parse(JSON.stringify(SEED));
+  /* 本机从没存过数据：现在装的是示例，允许云端把它替换成真实数据 */
+  cloud.freshLocal = true;
   saveEntries(false);
 }
 function saveEntries(touch) {
@@ -1067,9 +1070,12 @@ function pullCloud(silent) {
     cloud.remoteUpdatedAt = rec.updatedAt;
     if (rec.updatedBy) cloud.editor = rec.updatedBy;
     saveMeta();
-    /* 本机有尚未推送的改动（localAt 更新）时，不被云端旧版覆盖 */
-    if (rec.updatedAt && rec.updatedAt > Math.max(cloud.lastSyncAt || 0, cloud.localAt || 0) && rec.data && Array.isArray(rec.data.entries)) {
+    /* 本机编辑版：本机就是唯一真相，绝不用云端旧版覆盖本机（否则「改了但没传上去」会直接丢改动）。
+       同事打开的只读页才按时间戳取最新。 */
+    var ownEditor = !!(window.PUB_FORCE_STATIC && !window.PUB_DATA);
+    if ((!ownEditor || cloud.freshLocal) && rec.updatedAt && rec.updatedAt > Math.max(cloud.lastSyncAt || 0, cloud.localAt || 0) && rec.data && Array.isArray(rec.data.entries)) {
       state.entries = rec.data.entries;
+      cloud.freshLocal = false;
       saveLocalOnly();
       cloud.lastSyncAt = rec.updatedAt;
       saveMeta();
@@ -1163,9 +1169,20 @@ function manualPush() {
 function bootAutoPush(rec) {
   if (!(window.PUB_FORCE_STATIC && !window.PUB_DATA)) return;
   if (!cloudEnabled() || !cloud.cfg || !cloud.cfg.token) return;
+  if (!state.entries || !state.entries.length) return;
+  if (cloud.freshLocal) return; /* 本机还是初始示例数据，别把示例推上去 */
   var lt = cloud.localAt || 0;
   var rt = (rec && rec.updatedAt) || 0;
-  if (lt > rt) manualPush();
+  if (lt > rt) { manualPush(); return; }
+  /* 时间戳不可靠时（老文件没记录 localAt），用条数判断：本机比线上多，说明本机后来又加了内容 */
+  var localN = state.entries.length;
+  var remoteN = (rec && rec.data && rec.data.entries) ? rec.data.entries.length : 0;
+  if (localN > remoteN) { manualPush(); return; }
+  var same = false;
+  try {
+    same = !!(rec && rec.data && JSON.stringify(rec.data.entries) === JSON.stringify(state.entries));
+  } catch (e) { same = false; }
+  if (!same && rt > 0) toast("本机与线上内容不一致；若以本机为准，点顶部「立即上传本机数据」");
 }
 
 /* ================= 权限层 ================= */
