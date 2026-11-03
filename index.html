@@ -542,7 +542,7 @@ var LS_META = "wb_hkustgz_meta_v1";
 var CHANNELS = ["学校官微", "视频号", "小红书", "海媒", "官网"];
 var STATUSES = ["备选", "待准备", "进行中", "已发布"];
 var state = { entries: [], weekStart: null, editingId: null, confirmFn: null, dragId: null };
-var cloud = { cfg: null, status: "off", remoteUpdatedAt: 0, lastSyncAt: 0, editor: "", passHash: "", _id: "", busy: false, timer: null, localAt: 0, hasPub: false };
+var cloud = { cfg: null, status: "off", remoteUpdatedAt: 0, lastSyncAt: 0, editor: "", passHash: "", _id: "", busy: false, timer: null, localAt: 0, hasPub: false, preferApi: false };
 var auth = { editable: false, pass: "" };
 var pub = { loaded: false, publishedAt: 0, editorHash: "", editor: "", sig: "" };
 
@@ -654,7 +654,8 @@ function markSaved() {
 function schedulePush() {
   if (!cloudEnabled() || !auth.editable) return;
   clearTimeout(schedulePush._t);
-  schedulePush._t = setTimeout(function () { pushCloud(); }, 900);
+  /* 合并连续编辑：3 秒内的多次改动只推一次，减少提交数与 Pages 重建次数 */
+  schedulePush._t = setTimeout(function () { pushCloud(); }, 3000);
 }
 function nowHM() {
   var d = new Date();
@@ -936,8 +937,34 @@ function ghRead(i) {
       }, function () { return ghRead(i + 1); });
     }, function () { return ghRead(i + 1); });
 }
+/* base64 -> utf8 文本（Contents API 返回的 content 带换行） */
+function b64ToUtf8(b64) {
+  var s = atob(String(b64 || "").replace(/\s/g, ""));
+  try { return decodeURIComponent(escape(s)); } catch (e) { return s; }
+}
+/* GitHub Contents API 直读：无 CDN 缓存，打开页面就是最新。
+   匿名限 60 次/小时，只用于「首次加载 / 手动刷新」，轮询仍走 raw。 */
+function ghReadApi() {
+  var c = cloud.cfg;
+  var url = "https://api.github.com/repos/" + encodeURIComponent(c.owner) + "/" + encodeURIComponent(c.repo)
+    + "/contents/board.json?ref=" + encodeURIComponent(c.branch || "main");
+  var h = { "Accept": "application/vnd.github+json" };
+  if (c.token) h.Authorization = "Bearer " + c.token;
+  return fetch(url, { headers: h, cache: "no-store" }).then(function (r) {
+    if (!r.ok) throw new Error("api HTTP " + r.status);
+    return r.json();
+  }).then(function (j) {
+    if (!j || !j.content) throw new Error("api empty");
+    var rec = normGithub(JSON.parse(b64ToUtf8(j.content)));
+    if (!rec) throw new Error("api bad");
+    return rec;
+  });
+}
 function cloudRead() {
-  if (cloud.cfg.type === "github") return ghRead(0);
+  if (cloud.cfg.type === "github") {
+    if (cloud.preferApi) return ghReadApi().catch(function () { return ghRead(0); });
+    return ghRead(0);
+  }
   return fetch(cloudGetUrl(), { method: "GET", headers: cloudHeaders(), cache: "no-store" }).then(function (r) {
     if (!r.ok) return r.text().then(function (t) { throw new Error("HTTP " + r.status + " " + String(t).slice(0, 120)); });
     return r.json();
@@ -2312,8 +2339,20 @@ function init() {
   setModeUI();
   if (cloudEnabled()) {
     setSyncUI("busy", "正在连接云端…");
-    pullCloud(true);
+    /* 首次打开直读 GitHub API：绕过 raw 的 5 分钟 CDN 缓存，保证「打开就是最新」 */
+    cloud.preferApi = true;
+    pullCloud(true).then(function () { cloud.preferApi = false; });
     startPolling();
+    /* 点一下顶部同步状态 = 立刻拉一次最新（同事也可用） */
+    var sd = document.getElementById("syncDot");
+    if (sd) {
+      sd.style.cursor = "pointer";
+      sd.title = "点击立即拉取云端最新版";
+      sd.addEventListener("click", function () {
+        cloud.preferApi = true;
+        pullCloud(false).then(function () { cloud.preferApi = false; });
+      });
+    }
   } else {
     setSyncUI("off", "本地存储 · 单机模式");
     fetchPublished();
