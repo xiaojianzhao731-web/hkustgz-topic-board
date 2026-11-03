@@ -665,7 +665,7 @@ function loadCfg() {
   try { var raw = localStorage.getItem(LS_CFG); cloud.cfg = raw ? JSON.parse(raw) : null; } catch (e) { cloud.cfg = null; }
   /* 部署到 GitHub Pages 的那份：内置只读连接（不含 Token），同事打开即可看到在线最新版 */
   if (!cloud.cfg && window.GH_DEFAULT && window.GH_DEFAULT.repo) {
-    cloud.cfg = { type: "github", owner: window.GH_DEFAULT.owner, repo: window.GH_DEFAULT.repo, branch: window.GH_DEFAULT.branch || "main", token: "" };
+    cloud.cfg = { type: "github", owner: window.GH_DEFAULT.owner, repo: window.GH_DEFAULT.repo, branch: window.GH_DEFAULT.branch || "main", token: window.GH_DEFAULT.token || "" };
   }
   try {
     var m = JSON.parse(localStorage.getItem(LS_META) || "{}");
@@ -1029,7 +1029,8 @@ function pullCloud(silent) {
     cloud.remoteUpdatedAt = rec.updatedAt;
     if (rec.updatedBy) cloud.editor = rec.updatedBy;
     saveMeta();
-    if (rec.updatedAt && rec.updatedAt > cloud.lastSyncAt && rec.data && Array.isArray(rec.data.entries)) {
+    /* 本机有尚未推送的改动（localAt 更新）时，不被云端旧版覆盖 */
+    if (rec.updatedAt && rec.updatedAt > Math.max(cloud.lastSyncAt || 0, cloud.localAt || 0) && rec.data && Array.isArray(rec.data.entries)) {
       state.entries = rec.data.entries;
       saveLocalOnly();
       cloud.lastSyncAt = rec.updatedAt;
@@ -2135,6 +2136,8 @@ function init() {
   state.weekStart = mondayOf(todayStr());
   loadCfg();
   loadEntries();
+  /* 本机编辑版（强制本机锁 + 无内嵌快照）＝你本人的编辑台：放行编辑状态，才能自动写回 GitHub */
+  if (window.PUB_FORCE_STATIC && !window.PUB_DATA) { auth.editable = true; }
 
   document.getElementById("btnPrevWk").addEventListener("click", function () { state.weekStart = addDays(state.weekStart, -7); refreshAll(); });
   document.getElementById("btnNextWk").addEventListener("click", function () { state.weekStart = addDays(state.weekStart, 7); refreshAll(); });
