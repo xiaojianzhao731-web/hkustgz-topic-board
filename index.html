@@ -559,7 +559,8 @@ function saveEntries(touch) {
     localStorage.setItem(LS_KEY, JSON.stringify(state.entries));
     if (touch !== false) markSaved();
   } catch (e) { toast("保存失败：浏览器存储空间不足"); return; }
-  if (isPublisher()) { cloud.localAt = Date.now(); saveMeta(); }
+  /* 只有真正的用户编辑才算「本机待推送」；初始化写入示例数据不算 */
+  if (touch !== false && isPublisher()) { cloud.localAt = Date.now(); saveMeta(); }
   updatePubStatus();
   schedulePush();
 }
