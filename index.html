@@ -669,12 +669,13 @@ function nowHM() {
 function loadCfg() {
   try { var raw = localStorage.getItem(LS_CFG); cloud.cfg = raw ? JSON.parse(raw) : null; } catch (e) { cloud.cfg = null; }
   /* 本机编辑版内置了写入凭证：以文件内置配置为准。
-     浏览器里可能残留以前试用过的旧连接配置（例如已废弃的 Supabase），它会让同步彻底失效，
-     所以只要残留配置不是「可用的 GitHub + Token」，一律用内置凭证覆盖。 */
+     浏览器里可能残留以前保存过的旧连接配置（例如过期 Token、废弃的 Supabase），它会让同步彻底失效，
+     所以只要残留配置不是「用户手动保存过的 GitHub + Token」，一律用内置凭证覆盖。
+     手动保存的配置带 manual 标记（见 saveCloudCfg），保证用户自己粘的新 Token 不会被旧内置凭证顶掉。 */
   var builtin = (window.GH_DEFAULT && window.GH_DEFAULT.repo && window.GH_DEFAULT.token)
     ? { type: "github", owner: window.GH_DEFAULT.owner, repo: window.GH_DEFAULT.repo, branch: window.GH_DEFAULT.branch || "main", token: window.GH_DEFAULT.token }
     : null;
-  if (builtin && (!cloud.cfg || cloud.cfg.type !== "github" || !cloud.cfg.token)) {
+  if (builtin && !(cloud.cfg && cloud.cfg.type === "github" && cloud.cfg.token && cloud.cfg.manual)) {
     cloud.cfg = builtin;
     saveCfg();
   }
@@ -2186,6 +2187,7 @@ function testCloud() {
 function saveCloudCfg() {
   var c = collectCfg();
   if (!validateCfg(c)) return;
+  c.manual = true; /* 用户手动保存的配置，loadCfg 不用内置凭证覆盖 */
   cloud.cfg = c; saveCfg();
   cloud.editor = c.editor || cloud.editor;
   document.getElementById("cloudMask").classList.remove("show");
